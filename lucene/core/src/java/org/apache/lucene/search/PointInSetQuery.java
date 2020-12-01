@@ -144,6 +144,7 @@ public abstract class PointInSetQuery extends Query implements Accountable {
 
         if (numDims == 1) {
           MergePointVisitor intersectVisitor = new MergePointVisitor(sortedPackedPoints, result);
+          // all match 这里不单独判断优化了，因为测下来其实没啥差别，都会走一遍匹配判断，all_match其实就是取反全命中，道理是一样的
           // We optimize this common case, effectively doing a merge sort of the indexed values vs the queried set:
           if (values.getDocCount() == reader.maxDoc()
                   && values.getDocCount() == values.size()
@@ -157,7 +158,7 @@ public abstract class PointInSetQuery extends Query implements Accountable {
             int[] cost = new int[] { reader.maxDoc() };
             values.intersect(intersectVisitor.getInverseIntersectVisitor(resultOptimize, cost));
             final DocIdSetIterator iterator = new BitSetIterator(resultOptimize, cost[0]);
-            return new org.apache.lucene.search.ConstantScoreScorer(this, score(), scoreMode, iterator);
+            return new ConstantScoreScorer(this, score(), scoreMode, iterator);
           }
 
           // We optimize this common case, effectively doing a merge sort of the indexed values vs the queried set:
