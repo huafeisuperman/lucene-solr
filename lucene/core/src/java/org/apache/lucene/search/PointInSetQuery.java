@@ -152,11 +152,11 @@ public abstract class PointInSetQuery extends Query implements Accountable {
             // than half the leaf size then maybe we can make things faster
             // by computing the set of documents that do NOT match the range
             intersectVisitor.resetIterator();
-            final org.apache.lucene.util.FixedBitSet resultOptimize = new org.apache.lucene.util.FixedBitSet(reader.maxDoc());
+            final FixedBitSet resultOptimize = new FixedBitSet(reader.maxDoc());
             resultOptimize.set(0, reader.maxDoc());
             int[] cost = new int[] { reader.maxDoc() };
             values.intersect(intersectVisitor.getInverseIntersectVisitor(resultOptimize, cost));
-            final org.apache.lucene.search.DocIdSetIterator iterator = new BitSetIterator(resultOptimize, cost[0]);
+            final DocIdSetIterator iterator = new BitSetIterator(resultOptimize, cost[0]);
             return new org.apache.lucene.search.ConstantScoreScorer(this, score(), scoreMode, iterator);
           }
 
