@@ -31,13 +31,7 @@ import org.apache.lucene.index.PointValues.IntersectVisitor;
 import org.apache.lucene.index.PointValues.Relation;
 import org.apache.lucene.index.PrefixCodedTerms;
 import org.apache.lucene.index.PrefixCodedTerms.TermIterator;
-import org.apache.lucene.util.Accountable;
-import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util.BytesRefBuilder;
-import org.apache.lucene.util.BytesRefIterator;
-import org.apache.lucene.util.DocIdSetBuilder;
-import org.apache.lucene.util.FutureArrays;
-import org.apache.lucene.util.RamUsageEstimator;
+import org.apache.lucene.util.*;
 
 /**
  * Abstract query class to find all documents whose single or multi-dimensional point values, previously indexed with e.g. {@link IntPoint},
@@ -149,10 +143,26 @@ public abstract class PointInSetQuery extends Query implements Accountable {
         DocIdSetBuilder result = new DocIdSetBuilder(reader.maxDoc(), values, field);
 
         if (numDims == 1) {
+          MergePointVisitor intersectVisitor = new MergePointVisitor(sortedPackedPoints, result);
+          // We optimize this common case, effectively doing a merge sort of the indexed values vs the queried set:
+          if (values.getDocCount() == reader.maxDoc()
+                  && values.getDocCount() == values.size()
+                  && cost(-1, values, intersectVisitor) > reader.maxDoc() / 2) {
+            // If all docs have exactly one value and the cost is greater
+            // than half the leaf size then maybe we can make things faster
+            // by computing the set of documents that do NOT match the range
+            intersectVisitor.resetIterator();
+            final org.apache.lucene.util.FixedBitSet resultOptimize = new org.apache.lucene.util.FixedBitSet(reader.maxDoc());
+            resultOptimize.set(0, reader.maxDoc());
+            int[] cost = new int[] { reader.maxDoc() };
+            values.intersect(intersectVisitor.getInverseIntersectVisitor(resultOptimize, cost));
+            final org.apache.lucene.search.DocIdSetIterator iterator = new BitSetIterator(resultOptimize, cost[0]);
+            return new org.apache.lucene.search.ConstantScoreScorer(this, score(), scoreMode, iterator);
+          }
 
           // We optimize this common case, effectively doing a merge sort of the indexed values vs the queried set:
-          values.intersect(new MergePointVisitor(sortedPackedPoints, result));
-
+          intersectVisitor.resetIterator();
+          values.intersect(intersectVisitor);
         } else {
           // NOTE: this is naive implementation, where for each point we re-walk the KD tree to intersect.  We could instead do a similar
           // optimization as the 1D case, but I think it'd mean building a query-time KD tree so we could efficiently intersect against the
@@ -166,6 +176,15 @@ public abstract class PointInSetQuery extends Query implements Accountable {
         }
 
         return new ConstantScoreScorer(this, score(), scoreMode, result.build().iterator());
+      }
+
+      public long cost(long cost, PointValues values, IntersectVisitor visitor) {
+        if (cost == -1) {
+          // Computing the cost may be expensive, so only do it if necessary
+          cost = values.estimateDocCount(visitor);
+          assert cost >= 0;
+        }
+        return cost;
       }
 
       @Override
@@ -191,6 +210,11 @@ public abstract class PointInSetQuery extends Query implements Accountable {
       this.result = result;
       this.sortedPackedPoints = sortedPackedPoints;
       scratch.length = bytesPerDim;
+      this.iterator = this.sortedPackedPoints.iterator();
+      nextQueryPoint = iterator.next();
+    }
+
+    public void resetIterator() {
       this.iterator = this.sortedPackedPoints.iterator();
       nextQueryPoint = iterator.next();
     }
@@ -267,6 +291,54 @@ public abstract class PointInSetQuery extends Query implements Accountable {
 
       // We exhausted all points in the query:
       return Relation.CELL_OUTSIDE_QUERY;
+    }
+
+    public Relation relate(byte[] minPackedValue, byte[] maxPackedValue) {
+      return compare(minPackedValue, maxPackedValue);
+    }
+
+    @SuppressWarnings("all")
+    private IntersectVisitor getInverseIntersectVisitor(FixedBitSet result, int[] cost) {
+      return new IntersectVisitor() {
+
+        @Override
+        public void visit(int docID) {
+          result.clear(docID);
+          cost[0]--;
+        }
+
+        @Override
+        public void visit(int docID, byte[] packedValue) {
+          if (matches(packedValue) == false) {
+            visit(docID);
+          }
+        }
+
+        @Override
+        public void visit(DocIdSetIterator iterator, byte[] packedValue) throws IOException {
+          if (matches(packedValue) == false) {
+            int docID;
+            while ((docID = iterator.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+              visit(docID);
+            }
+          }
+        }
+
+        @Override
+        public Relation compare(byte[] minPackedValue, byte[] maxPackedValue) {
+          Relation relation = relate(minPackedValue, maxPackedValue);
+          switch (relation) {
+            case CELL_INSIDE_QUERY:
+              // all points match, skip this subtree
+              return Relation.CELL_OUTSIDE_QUERY;
+            case CELL_OUTSIDE_QUERY:
+              // none of the points match, clear all documents
+              return Relation.CELL_INSIDE_QUERY;
+            default:
+              return relation;
+          }
+        }
+      };
     }
   }
 
