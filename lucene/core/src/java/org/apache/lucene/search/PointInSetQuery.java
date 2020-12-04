@@ -148,7 +148,7 @@ public abstract class PointInSetQuery extends Query implements Accountable {
           // We optimize this common case, effectively doing a merge sort of the indexed values vs the queried set:
           if (values.getDocCount() == reader.maxDoc()
                   && values.getDocCount() == values.size()
-                  && cost(-1, values, intersectVisitor) > reader.maxDoc() / 2) {
+                  && cost(values, intersectVisitor) > reader.maxDoc() / 2) {
             // If all docs have exactly one value and the cost is greater
             // than half the leaf size then maybe we can make things faster
             // by computing the set of documents that do NOT match the range
@@ -179,12 +179,9 @@ public abstract class PointInSetQuery extends Query implements Accountable {
         return new ConstantScoreScorer(this, score(), scoreMode, result.build().iterator());
       }
 
-      public long cost(long cost, PointValues values, IntersectVisitor visitor) {
-        if (cost == -1) {
-          // Computing the cost may be expensive, so only do it if necessary
-          cost = values.estimateDocCount(visitor);
-          assert cost >= 0;
-        }
+      public long cost(PointValues values, IntersectVisitor visitor) {
+        long cost = values.estimateDocCount(visitor);
+        assert cost >= 0;
         return cost;
       }
 
